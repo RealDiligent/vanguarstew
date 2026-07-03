@@ -224,3 +224,39 @@ def test_truncation_flag_when_page_cap_hit(monkeypatch):
     monkeypatch.setattr(gc, "_get", _pager({1: full, 2: full, 3: full}))
     ctx = gc.fetch_context_at("foo", "bar", T, token=None, max_issue_pages=2)
     assert ctx["_issues_truncated"] is True
+
+
+def test_enrich_context_preserves_issues_truncated(monkeypatch):
+    base = {
+        "frozen_at": {"date": "2023-06-01T00:00:00Z"},
+        "open_issues": [],
+        "_source": "git-freeze",
+    }
+
+    def fake_fetch(owner, repo, until, token=None, **kwargs):
+        return {
+            "open_issues": [{"number": 1, "title": "seen before cap"}],
+            "open_prs": [],
+            "_issues_truncated": True,
+            "_source": "github-api",
+        }
+
+    monkeypatch.setattr(gc, "fetch_context_at", fake_fetch)
+    monkeypatch.setattr("benchmark.freeze.origin_url", lambda _path: "https://github.com/foo/bar.git")
+
+    merged = gc.enrich_context(base, "/fake/repo")
+    assert merged["_github_enriched"] is True
+    assert merged["_issues_truncated"] is True
+    assert merged["open_issues"][0]["number"] == 1
+
+
+def test_open_issues_for_scoring_omits_truncated_backlog():
+    partial = {
+        "_issues_truncated": True,
+        "open_issues": [{"number": 1, "title": "Memory leak under load"}],
+    }
+    complete = {
+        "open_issues": [{"number": 1, "title": "Memory leak under load"}],
+    }
+    assert gc.open_issues_for_scoring(partial) is None
+    assert gc.open_issues_for_scoring(complete) == complete["open_issues"]

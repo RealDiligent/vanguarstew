@@ -226,8 +226,21 @@ def enrich_context(context: dict, source_repo_path: str, token=None) -> dict:
             if gh.get(key):
                 merged[key] = gh[key]
         merged["_github_enriched"] = True
+        if gh.get("_issues_truncated"):
+            merged["_issues_truncated"] = True
         return merged
     except Exception as exc:  # offline / rate-limited / private — degrade to git-only
         merged = dict(context)
         merged["_github_error"] = str(exc)[:200]
         return merged
+
+
+def open_issues_for_scoring(context: dict):
+    """Return open issues for backlog scoring, or None when pagination was incomplete.
+
+    Partial issue lists at T would produce misleading ``backlog_recall``; skip backlog
+    scoring when ``_issues_truncated`` is set (same effect as an empty backlog).
+    """
+    if context.get("_issues_truncated"):
+        return None
+    return context.get("open_issues")
