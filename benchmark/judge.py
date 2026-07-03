@@ -23,6 +23,11 @@ import random
 import re
 
 _WINNER = re.compile(r'"?winner"?\s*[:=]\s*"?(A|B|tie)\b', re.I)
+_JUDGE_ROLE = re.compile(
+    r'\byou\s+are\s+(?:now\s+)?(?:the\s+)?(?:judge|evaluator|grader|scorer|referee)\b', re.I)
+_IGNORE_PRIOR = re.compile(
+    r'\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+'
+    r'(?:instructions?|prompts?|rules?|guidelines?)\b', re.I)
 
 SYSTEM = (
     "You are judging two maintainers' submissions for the same repository, frozen at a point "
@@ -38,6 +43,36 @@ SYSTEM = (
     'Respond ONLY with JSON: {"winner": "A" | "B" | "tie", "why": "..."}. Keep "why" under 20 '
     "words."
 )
+
+
+def _submission_text(submission: dict) -> str:
+    """Concatenate the free-text fields miners can use for judge-directed injection."""
+    chunks = []
+    phil = submission.get("philosophy")
+    if isinstance(phil, dict):
+        for val in phil.values():
+            if isinstance(val, str):
+                chunks.append(val)
+            elif isinstance(val, list):
+                chunks.extend(str(x) for x in val)
+    elif phil:
+        chunks.append(str(phil))
+    for item in submission.get("plan") or []:
+        if isinstance(item, dict):
+            for key in ("title", "theme", "kind", "rationale"):
+                if item.get(key):
+                    chunks.append(str(item[key]))
+        else:
+            chunks.append(str(item))
+    if submission.get("rationale"):
+        chunks.append(str(submission["rationale"]))
+    return "\n".join(chunks)
+
+
+def _has_judge_injection(submission: dict) -> bool:
+    """True when a submission tries to instruct or hijack the pairwise judge."""
+    text = _submission_text(submission)
+    return bool(_WINNER.search(text) or _JUDGE_ROLE.search(text) or _IGNORE_PRIOR.search(text))
 
 
 def _parse_winner(text: str) -> str:
@@ -138,6 +173,15 @@ def pairwise_judge(context: dict, submission_a, submission_b, revealed, llm, rng
     ``dual_order=False`` a single randomized-order call is made (cheaper, higher variance).
     """
     rng = rng or random.Random(0)
+
+    inj_a = _has_judge_injection(submission_a)
+    inj_b = _has_judge_injection(submission_b)
+    if inj_a and inj_b:
+        return "tie"
+    if inj_a:
+        return "B"
+    if inj_b:
+        return "A"
 
     if llm.offline:
         ra, rb = _offline_rank(submission_a), _offline_rank(submission_b)
