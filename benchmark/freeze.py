@@ -14,6 +14,23 @@ import tarfile
 
 from agent.context import CONTEXT_FILE
 from benchmark.leakage import scrub_context
+from benchmark.score import base_from_releases
+
+
+def _context_releases(tags: list[str], window: int = 10) -> list[dict]:
+    """Recent release tags for context, always including the highest semver at T.
+
+    ``base_from_releases`` needs the true latest version for bump scoring, but we still
+    cap the recent window so agent context stays bounded.
+    """
+    if not tags:
+        return []
+    recent = tags[-window:]
+    best = base_from_releases([{"tag": t} for t in tags])
+    if best and best not in recent:
+        keep = set(recent) | {best}
+        recent = [t for t in tags if t in keep]
+    return [{"tag": t} for t in recent]
 
 
 def _git(repo, *args, check=True):
@@ -59,7 +76,7 @@ def build_context(repo: str, commit: str, lookback: int = 50) -> dict:
         if len(parts) == 3:
             commits.append({"sha": parts[0][:10], "date": parts[1], "subject": parts[2]})
     # `git tag --merged` defaults to refname order, which is wrong for versions like
-    # v1.10.0 vs v1.9.0. Sort by creation date so `tags[-10:]` is truly the recent window.
+    # v1.10.0 vs v1.9.0. Sort by creation date so the recent window is chronological.
     tags = [
         t
         for t in _git(repo, "tag", "--sort=creatordate", "--merged", commit, check=False).splitlines()
@@ -78,7 +95,7 @@ def build_context(repo: str, commit: str, lookback: int = 50) -> dict:
         "open_prs": [],
         "labels": [],
         "milestones": [],
-        "releases": [{"tag": t} for t in tags[-10:]],
+        "releases": _context_releases(tags),
         "readme_excerpt": readme,
         "_source": "git-freeze",
     }

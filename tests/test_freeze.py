@@ -13,6 +13,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from benchmark.freeze import build_context  # noqa: E402
+from benchmark.score import base_from_releases  # noqa: E402
 
 
 def _git(repo, *args, env=None):
@@ -64,6 +65,30 @@ def test_build_context_keeps_ten_most_recent_releases():
 
         ctx = build_context(repo, "HEAD")
         assert [r["tag"] for r in ctx["releases"]] == tags[-10:]
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git required")
+def test_build_context_includes_highest_semver_outside_recent_window():
+    """Backport tags after a major release must not drop the true base version."""
+    repo = tempfile.mkdtemp()
+    try:
+        _git(repo, "init", "-q")
+        _git(repo, "config", "user.email", "t@t")
+        _git(repo, "config", "user.name", "t")
+
+        creation = ["v2.0.0", * [f"v1.{i}.0" for i in range(9, 19)]]  # 11 tags total
+        for seq, tag in enumerate(creation, start=1):
+            _commit_and_tag(repo, seq, tag)
+
+        ctx = build_context(repo, "HEAD")
+        release_tags = [r["tag"] for r in ctx["releases"]]
+
+        assert "v2.0.0" in release_tags
+        assert base_from_releases(ctx["releases"]) == "v2.0.0"
+        assert release_tags == [t for t in creation if t in set(release_tags)]
+        assert release_tags.index("v2.0.0") < release_tags.index("v1.18.0")
     finally:
         shutil.rmtree(repo, ignore_errors=True)
 
