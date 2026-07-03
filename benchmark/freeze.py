@@ -9,11 +9,57 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 
 from agent.context import CONTEXT_FILE
 from benchmark.leakage import scrub_context
+
+
+def _safe_relative_name(name: str) -> str:
+    """Normalize a tar member name and reject path-traversal attempts."""
+    clean = name.replace("\\", "/").lstrip("/")
+    parts = [p for p in clean.split("/") if p and p != "."]
+    if not parts or ".." in parts:
+        raise tarfile.TarError(f"unsafe path in tar archive: {name!r}")
+    return "/".join(parts)
+
+
+def _safe_join(dest: str, name: str) -> str:
+    """Resolve `name` under `dest`, raising if it escapes the destination root."""
+    rel = _safe_relative_name(name)
+    joined = os.path.join(dest, *rel.split("/"))
+    abs_dest = os.path.abspath(dest)
+    abs_joined = os.path.abspath(joined)
+    if abs_joined != abs_dest and not abs_joined.startswith(abs_dest + os.sep):
+        raise tarfile.TarError(f"path escapes destination: {name!r}")
+    return abs_joined
+
+
+def _safe_extractall(tf: tarfile.TarFile, dest: str) -> None:
+    """Extract only regular files and directories (py<3.12 ``filter='data'`` equivalent).
+
+    Skips symlinks, hard links, and special files; rejects absolute paths and ``..``
+    components so untrusted repo archives cannot escape the sandbox destination.
+    """
+    os.makedirs(dest, exist_ok=True)
+    for member in tf.getmembers():
+        if member.issym() or member.islnk() or member.ischr() or member.isblk() or member.isfifo():
+            continue
+        if not member.isdir() and not member.isreg():
+            continue
+        target = _safe_join(dest, member.name)
+        if member.isdir():
+            os.makedirs(target, exist_ok=True)
+            continue
+        parent = os.path.dirname(target)
+        os.makedirs(parent, exist_ok=True)
+        src = tf.extractfile(member)
+        if src is None:
+            continue
+        with src, open(target, "wb") as out:
+            shutil.copyfileobj(src, out)
 
 
 def _git(repo, *args, check=True):
@@ -37,7 +83,7 @@ def export_tree(repo: str, commit: str, dest: str) -> None:
         try:
             tf.extractall(dest, filter="data")  # py>=3.12
         except TypeError:
-            tf.extractall(dest)
+            _safe_extractall(tf, dest)
     proc.wait()
     if proc.returncode not in (0, None):
         raise RuntimeError(f"git archive failed for {commit}")
