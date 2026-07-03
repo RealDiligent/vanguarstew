@@ -81,36 +81,43 @@ def run_replay(repo_path, agent_file="agent.py", n_tasks=3, horizon=5,
             dest = os.path.join(base, f"task_{k}")
             if os.path.exists(dest):
                 shutil.rmtree(dest)
-            ctx = write_frozen(repo_path, task["freeze_commit"], dest)
-            if enrich_github:
-                ctx = scrub_context(enrich_context(ctx, repo_path, token=github_token))
-                with open(os.path.join(dest, CONTEXT_FILE), "w", encoding="utf-8") as f:
-                    json.dump(ctx, f, indent=1)
-            request = f"plan the next {horizon} maintainer actions"
-            challenger = solve(
-                repo_path=dest, request=request,
-                model=model or "validator-managed-model",
-                api_base=api_base or "", api_key=api_key or "offline", n=horizon,
-            )
-            baseline_out = opponent(dest, request, context=ctx, n=horizon)
-            winner = pairwise_judge(ctx, _submission(challenger), _submission(baseline_out),
-                                    task["revealed"], llm, rng, dual_order=dual_order_judge)
-            who = {"A": "challenger", "B": "baseline", "tie": "tie"}[winner]
-            tally[who] += 1
-            obj = objective_score(
-                challenger.get("plan"), task["revealed"],
-                version_bump=challenger.get("version_bump"),
-                base_version=base_from_releases(ctx.get("releases")),
-                open_issues=ctx.get("open_issues"),
-            )
-            rows.append({
-                "task": k,
-                "freeze": task["freeze_commit"][:10],
-                "winner": who,
-                "overlap": trajectory_overlap(challenger.get("plan"), task["revealed"]),
-                "objective": obj,
-                "composite": composite_score(winner, obj, w_judge, w_objective),
-            })
+            try:
+                ctx = write_frozen(repo_path, task["freeze_commit"], dest)
+                if enrich_github:
+                    ctx = scrub_context(enrich_context(ctx, repo_path, token=github_token))
+                    with open(os.path.join(dest, CONTEXT_FILE), "w", encoding="utf-8") as f:
+                        json.dump(ctx, f, indent=1)
+                request = f"plan the next {horizon} maintainer actions"
+                challenger = solve(
+                    repo_path=dest, request=request,
+                    model=model or "validator-managed-model",
+                    api_base=api_base or "", api_key=api_key or "offline", n=horizon,
+                )
+                baseline_out = opponent(dest, request, context=ctx, n=horizon)
+                winner = pairwise_judge(ctx, _submission(challenger), _submission(baseline_out),
+                                        task["revealed"], llm, rng, dual_order=dual_order_judge)
+                who = {"A": "challenger", "B": "baseline", "tie": "tie"}[winner]
+                tally[who] += 1
+                obj = objective_score(
+                    challenger.get("plan"), task["revealed"],
+                    version_bump=challenger.get("version_bump"),
+                    base_version=base_from_releases(ctx.get("releases")),
+                    open_issues=ctx.get("open_issues"),
+                )
+                rows.append({
+                    "task": k,
+                    "freeze": task["freeze_commit"][:10],
+                    "winner": who,
+                    "overlap": trajectory_overlap(challenger.get("plan"), task["revealed"]),
+                    "objective": obj,
+                    "composite": composite_score(winner, obj, w_judge, w_objective),
+                })
+            except Exception as exc:  # noqa: BLE001 — isolate per-task LLM/agent failures
+                rows.append({
+                    "task": k,
+                    "freeze": task["freeze_commit"][:10],
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
     finally:
         if not work_dir:
             shutil.rmtree(base, ignore_errors=True)
@@ -118,11 +125,13 @@ def run_replay(repo_path, agent_file="agent.py", n_tasks=3, horizon=5,
     # The single-repo composite output contract: the mean blended score, plus the two
     # component means it blends (judge outcome + objective anchor) so the number is
     # inspectable and the multi-repo aggregate has explicit parts to average.
-    composites = [r["composite"] for r in rows]
-    judge_parts = [_JUDGE_COMPONENT[r["winner"]] for r in rows]
-    objective_parts = [objective_component(r["objective"]) for r in rows]
+    composites = [r["composite"] for r in rows if "composite" in r]
+    judge_parts = [_JUDGE_COMPONENT[r["winner"]] for r in rows if "winner" in r]
+    objective_parts = [objective_component(r["objective"]) for r in rows if "objective" in r]
     return {
         "tasks": len(tasks),
+        "scored_tasks": len(composites),
+        "task_errors": len(rows) - len(composites),
         "baseline": baseline,
         "tally": tally,
         "decisive_margin": tally["challenger"] - tally["baseline"],
