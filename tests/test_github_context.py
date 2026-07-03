@@ -224,3 +224,42 @@ def test_truncation_flag_when_page_cap_hit(monkeypatch):
     monkeypatch.setattr(gc, "_get", _pager({1: full, 2: full, 3: full}))
     ctx = gc.fetch_context_at("foo", "bar", T, token=None, max_issue_pages=2)
     assert ctx["_issues_truncated"] is True
+
+
+def test_timeline_fetch_cap_limits_api_calls(monkeypatch):
+    T = datetime(2023, 6, 1, tzinfo=timezone.utc)
+    issues = [_issue(i, "2023-01-01T00:00:00Z") for i in range(60)]
+    timeline_calls = {"n": 0}
+
+    def fake_get(url, token, timeout=20):
+        if "/timeline" in url:
+            timeline_calls["n"] += 1
+            return [{"event": "labeled", "created_at": "2023-02-01T00:00:00Z",
+                     "label": {"name": "bug"}}]
+        if "/issues" in url and "timeline" not in url:
+            return issues
+        return []
+
+    monkeypatch.setattr(gc, "_get", fake_get)
+    ctx = gc.fetch_context_at("foo", "bar", T, token=None, max_timeline_fetches=50)
+    assert timeline_calls["n"] == 50
+    assert ctx["_labels_truncated"] is True
+    assert sum(1 for i in ctx["open_issues"] if i["labels_as_of_t"]) == 50
+    assert sum(1 for i in ctx["open_issues"] if not i["labels_as_of_t"]) == 10
+
+
+def test_timeline_fetch_cap_not_set_when_under_limit(monkeypatch):
+    T = datetime(2023, 6, 1, tzinfo=timezone.utc)
+    issues = [_issue(i, "2023-01-01T00:00:00Z") for i in range(5)]
+
+    def fake_get(url, token, timeout=20):
+        if "/timeline" in url:
+            return []
+        if "/issues" in url and "timeline" not in url:
+            return issues
+        return []
+
+    monkeypatch.setattr(gc, "_get", fake_get)
+    ctx = gc.fetch_context_at("foo", "bar", T, token=None, max_timeline_fetches=50)
+    assert ctx["_labels_truncated"] is False
+    assert len(ctx["open_issues"]) == 5

@@ -18,6 +18,7 @@ from datetime import datetime
 
 API = "https://api.github.com"
 DEFAULT_MAX_ISSUE_PAGES = 10  # bound on pages walked back toward T (100 items/page)
+DEFAULT_MAX_TIMELINE_FETCHES = 50  # cap per-task timeline calls for as-of-T label replay
 
 
 def parse_owner_repo(remote_url: str):
@@ -120,15 +121,19 @@ def _issue_timeline(base: str, number, token, timeout: int, max_pages: int = 5):
     return events
 
 
-def _collect_open_at(base: str, until: datetime, token, timeout: int, max_pages: int):
+def _collect_open_at(base: str, until: datetime, token, timeout: int, max_pages: int,
+                     max_timeline_fetches: int = DEFAULT_MAX_TIMELINE_FETCHES):
     """Walk issues (created desc) page by page, collecting those open at `until`.
 
     Sorted newest-first, so pages created after T are skipped cheaply (small for recent T,
     the preferred case), then open-at-T items are gathered until the history is exhausted
-    (a short page) or the page cap is hit. Returns (open_issues, open_prs, truncated).
+    (a short page) or the page cap is hit. Returns
+    (open_issues, open_prs, issues_truncated, labels_truncated).
     """
     open_issues, open_prs = [], []
     truncated = False
+    labels_truncated = False
+    timeline_fetches = 0
     for page in range(1, max_pages + 1):
         batch = _get(
             f"{base}/issues?state=all&per_page=100&sort=created&direction=desc&page={page}",
@@ -147,9 +152,14 @@ def _collect_open_at(base: str, until: datetime, token, timeout: int, max_pages:
             # reconstruct membership as-of-T from the item's timeline instead of
             # copying it.get("labels"). When the timeline can't be read (offline,
             # rate-limited, or no label events), omit labels rather than leak.
-            as_of_t = _labels_at(
-                _issue_timeline(base, it.get("number"), token, timeout), until
-            )
+            if timeline_fetches < max_timeline_fetches:
+                as_of_t = _labels_at(
+                    _issue_timeline(base, it.get("number"), token, timeout), until
+                )
+                timeline_fetches += 1
+            else:
+                labels_truncated = True
+                as_of_t = None
             rec = {
                 "number": it.get("number"),
                 "title": it.get("title"),
@@ -162,23 +172,25 @@ def _collect_open_at(base: str, until: datetime, token, timeout: int, max_pages:
             break                 # exhausted all issues — complete
         if page == max_pages:
             truncated = True      # more pages remain beyond the cap
-    return open_issues, open_prs, truncated
+    return open_issues, open_prs, truncated, labels_truncated
 
 
 def fetch_context_at(owner: str, repo: str, until: datetime, token=None,
                      per_page: int = 100, timeout: int = 20,
-                     max_issue_pages: int = DEFAULT_MAX_ISSUE_PAGES) -> dict:
+                     max_issue_pages: int = DEFAULT_MAX_ISSUE_PAGES,
+                     max_timeline_fetches: int = DEFAULT_MAX_TIMELINE_FETCHES) -> dict:
     """GitHub-derived context knowable at `until` (a timezone-aware UTC datetime).
 
     Issues/PRs are paginated (created desc) back toward T so open-at-T reconstruction is
     complete regardless of how old T is, bounded by `max_issue_pages`; `_issues_truncated`
-    flags when the cap was hit before exhausting history.
+    flags when the cap was hit before exhausting history. As-of-T label replay is capped by
+    ``max_timeline_fetches``; ``_labels_truncated`` flags when older open items skipped it.
     """
     token = token or os.environ.get("GITHUB_TOKEN") or None
     base = f"{API}/repos/{owner}/{repo}"
 
-    open_issues, open_prs, truncated = _collect_open_at(base, until, token, timeout,
-                                                        max_issue_pages)
+    open_issues, open_prs, truncated, labels_truncated = _collect_open_at(
+        base, until, token, timeout, max_issue_pages, max_timeline_fetches)
 
     labels = [lbl.get("name") for lbl in _get(f"{base}/labels?per_page={per_page}", token, timeout)]
 
@@ -205,6 +217,7 @@ def fetch_context_at(owner: str, repo: str, until: datetime, token=None,
         "_source": "github-api",
         "_knowable_until": until.isoformat(),
         "_issues_truncated": truncated,
+        "_labels_truncated": labels_truncated,
     }
 
 
@@ -226,6 +239,8 @@ def enrich_context(context: dict, source_repo_path: str, token=None) -> dict:
             if gh.get(key):
                 merged[key] = gh[key]
         merged["_github_enriched"] = True
+        if gh.get("_labels_truncated"):
+            merged["_labels_truncated"] = True
         return merged
     except Exception as exc:  # offline / rate-limited / private — degrade to git-only
         merged = dict(context)
