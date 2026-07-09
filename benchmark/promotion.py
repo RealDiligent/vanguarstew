@@ -19,7 +19,9 @@ its merits instead of failing every check vacuously. The criteria:
    agent that does not actually out-decide the reference does not pass;
 4. ``judge_trustworthy`` - the pairwise judge's order-``disagreement_rate`` is at most
    ``max_disagreement`` (a run whose verdicts flip on presentation order isn't a trustworthy
-   basis for promotion). A run judged single-order carries no disagreement rate and passes this
+   basis for promotion). The rate is recomputed from ``judge_order_stats`` when available,
+   falling back to ``judge_report.disagreement_rate`` only when stats are absent — mirroring
+   ``check_judge``. A run judged single-order carries no disagreement rate and passes this
    check, since there is no instability signal to fail on.
 
 The companion ``scripts/promotion.py`` exits non-zero when the gate fails, so promotion can be
@@ -42,6 +44,10 @@ DEFAULT_MAX_DISAGREEMENT = 0.5
 
 def _is_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _dict(value) -> dict:
@@ -118,6 +124,37 @@ def _decisive_margin(result: dict):
     return None
 
 
+def _disagreement_rate_from_telemetry(telemetry: dict) -> float | None:
+    """Disagreement rate from one telemetry block, or ``None`` when it cannot be derived."""
+    telemetry = _dict(telemetry)
+    dual = telemetry.get("dual_order_tasks")
+    if not _is_number(dual):
+        agree, disagree, tie = telemetry.get("agree"), telemetry.get("disagree"), telemetry.get("tie")
+        if all(_is_int(v) for v in (agree, disagree, tie)):
+            dual = agree + disagree + tie
+        else:
+            dual = None
+    disagreements = telemetry.get("disagree")
+    if disagreements is None:
+        disagreements = telemetry.get("disagreements")
+    if _is_int(dual) and dual > 0 and _is_int(disagreements) and disagreements >= 0:
+        return round(disagreements / dual, 3)
+    rate = telemetry.get("disagreement_rate")
+    return round(float(rate), 3) if _is_number(rate) else None
+
+
+def _disagreement_rate(source: dict) -> float | None:
+    """Order-disagreement rate, preferring ``judge_order_stats`` over ``judge_report``."""
+    source = _dict(source)
+    for telemetry in (_dict(source.get("judge_order_stats")), _dict(source.get("judge_report"))):
+        if not telemetry:
+            continue
+        rate = _disagreement_rate_from_telemetry(telemetry)
+        if rate is not None:
+            return rate
+    return None
+
+
 def _promotion_source(result: dict) -> dict:
     """The partition whose telemetry the promotion gate evaluates.
 
@@ -178,7 +215,7 @@ def check_promotion(result, min_composite: float = DEFAULT_MIN_COMPOSITE,
     source = _promotion_source(result)
     composite = _scored_composite(source)
     margin = _decisive_margin(source)
-    disagreement = _dict(source.get("judge_report")).get("disagreement_rate")
+    disagreement = _disagreement_rate(source)
     error = result.get("error") or source.get("error")
     checks = []
 
@@ -201,7 +238,12 @@ def check_promotion(result, min_composite: float = DEFAULT_MIN_COMPOSITE,
         else "decisive_margin unavailable (no decisive_margin/tally)")
 
     if disagreement is None:
-        add("judge_trustworthy", True, "no dual-order disagreement signal (single-order judge)")
+        report_rate = _dict(source.get("judge_report")).get("disagreement_rate")
+        if report_rate is not None and not _is_number(report_rate):
+            add("judge_trustworthy", False,
+                f"disagreement_rate not numeric ({report_rate!r})")
+        else:
+            add("judge_trustworthy", True, "no dual-order disagreement signal (single-order judge)")
     else:
         ok = _is_number(disagreement) and disagreement <= max_disagreement
         add("judge_trustworthy", ok,

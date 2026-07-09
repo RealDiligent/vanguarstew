@@ -90,6 +90,19 @@ def test_high_disagreement_is_not_trustworthy():
     assert "judge_trustworthy" in failed_checks(result)
 
 
+def test_stale_judge_report_disagreement_rate_is_recomputed_from_stats():
+    art = {
+        "composite_mean": 0.7,
+        "decisive_margin": 3,
+        "judge_report": {"disagreement_rate": 0.05, "dual_order_tasks": 10, "disagreements": 1},
+        "judge_order_stats": {"dual_order_tasks": 10, "disagree": 8, "agree": 2, "tie": 0},
+    }
+    result = check_promotion(art, max_disagreement=0.3)
+    assert result["passed"] is False
+    assert result["disagreement_rate"] == 0.8
+    assert "judge_trustworthy" in failed_checks(result)
+
+
 def test_single_order_run_passes_judge_trustworthy():
     # No disagreement_rate (single-order judge) -> the trust check passes (no instability signal).
     result = check_promotion(_result(disagreement=None))
