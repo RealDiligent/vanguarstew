@@ -90,6 +90,43 @@ def test_high_disagreement_is_not_trustworthy():
     assert "judge_trustworthy" in failed_checks(result)
 
 
+def test_stale_judge_report_disagreement_rate_is_recomputed_from_stats():
+    art = {
+        "composite_mean": 0.7,
+        "decisive_margin": 3,
+        "judge_report": {"disagreement_rate": 0.05, "dual_order_tasks": 10, "disagreements": 1},
+        "judge_order_stats": {"dual_order_tasks": 10, "disagree": 8, "agree": 2, "tie": 0},
+    }
+    result = check_promotion(art, max_disagreement=0.3)
+    assert result["passed"] is False
+    assert result["disagreement_rate"] == 0.8
+    assert "judge_trustworthy" in failed_checks(result)
+
+
+def test_disagreement_falls_back_to_report_when_stats_absent():
+    art = {
+        "composite_mean": 0.7,
+        "decisive_margin": 2,
+        "judge_report": {"disagreement_rate": 0.15, "dual_order_tasks": 10},
+    }
+    result = check_promotion(art, max_disagreement=0.2)
+    assert result["disagreement_rate"] == 0.15
+    trust = next(c for c in result["checks"] if c["name"] == "judge_trustworthy")
+    assert trust["passed"] is True
+
+
+def test_disagreement_derived_from_agree_disagree_tie_when_dual_tasks_absent():
+    art = {
+        "composite_mean": 0.7,
+        "decisive_margin": 3,
+        "judge_order_stats": {"agree": 2, "disagree": 8, "tie": 0},
+        "judge_report": {"disagreement_rate": 0.05},
+    }
+    result = check_promotion(art, max_disagreement=0.5)
+    assert result["disagreement_rate"] == 0.8
+    assert "judge_trustworthy" in failed_checks(result)
+
+
 def test_single_order_run_passes_judge_trustworthy():
     # No disagreement_rate (single-order judge) -> the trust check passes (no instability signal).
     result = check_promotion(_result(disagreement=None))
@@ -139,6 +176,18 @@ def test_high_tuned_disagreement_fails_judge_trustworthy():
     assert result["passed"] is False
     assert failed_checks(result) == ["judge_trustworthy"]
     assert result["disagreement_rate"] == 0.8      # read from tuned, not None
+
+
+def test_stale_tuned_partition_disagreement_is_recomputed_from_stats():
+    art = _generalization({
+        "composite_mean": 0.7, "scored_repos": 3,
+        "judge_report": {"wins": 9, "losses": 2, "disagreement_rate": 0.05, "dual_order_tasks": 10},
+        "judge_order_stats": {"dual_order_tasks": 10, "disagree": 8, "agree": 2, "tie": 0},
+    })
+    result = check_promotion(art, max_disagreement=0.3)
+    assert result["passed"] is False
+    assert result["disagreement_rate"] == 0.8
+    assert "judge_trustworthy" in failed_checks(result)
 
 
 def test_generalization_below_floor_holds_on_tuned_composite():
