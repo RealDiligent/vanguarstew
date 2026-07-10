@@ -104,10 +104,33 @@ def test_no_partition_error_tolerates_missing_per_repo_and_non_list_per_repo():
     assert check_generalization(art)["passed"] is True
 
 
-def test_falsy_per_repo_error_is_not_a_failure_record():
+def test_per_repo_none_on_both_partitions_does_not_crash():
     art = _gen(0.68, 0.63)
-    art["tuned"]["per_repo"] = [{"repo": "a", "tasks": 4, "error": ""}]
+    art["tuned"]["per_repo"] = None
+    art["held_out"]["per_repo"] = None
     assert check_generalization(art)["passed"] is True
+
+
+def test_per_repo_with_none_and_non_dict_entries_does_not_crash():
+    art = _gen(0.68, 0.63)
+    art["tuned"]["per_repo"] = [{"repo": "a", "tasks": 4}, None, 42]
+    art["held_out"]["per_repo"] = [None, {"repo": "b", "tasks": 3}]
+    assert check_generalization(art)["passed"] is True
+
+
+def test_falsy_per_repo_error_values_are_not_failure_records():
+    for falsy in (0, False, None, ""):
+        art = _gen(0.68, 0.63)
+        art["tuned"]["per_repo"] = [{"repo": "a", "tasks": 4, "error": falsy}]
+        assert check_generalization(art)["passed"] is True, falsy
+
+
+def test_bare_string_per_repo_row_fails_no_partition_error():
+    art = _gen(0.68, 0.63)
+    art["tuned"]["per_repo"] = [{"repo": "a", "tasks": 4}, "corrupt row"]
+    result = check_generalization(art)
+    assert result["passed"] is False
+    assert "no_partition_error" in failed_checks(result)
 
 
 def test_the_gap_bound_is_inclusive():
