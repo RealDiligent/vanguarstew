@@ -216,14 +216,28 @@ def test_headline_source_helper_requires_both_generalization_partitions():
     assert _headline_source(gen) is gen["tuned"]
 
 
-def test_artifact_error_helper_survives_partition_error_failure(monkeypatch):
-    import benchmark.regression as reg
+def test_headline_source_ignores_orphan_tuned_when_held_out_is_not_a_dict():
+    art = {
+        "composite_mean": 0.66,
+        "scored_repos": 2,
+        "tuned": {"per_repo": [{"repo": "b", "tasks": 0, "error": "clone failed"}]},
+        "held_out": None,
+    }
+    assert _headline_source(art) is art
+    assert _artifact_error(art) is None
 
-    def _boom(partition):
-        raise RuntimeError("scan failed")
 
-    monkeypatch.setattr(reg, "_partition_error", _boom)
-    assert _artifact_error({"composite_mean": 0.66, "scored_repos": 1}) == "partition error scan failed"
+def test_whitespace_top_level_error_fails_both_scored():
+    art = _run(0.66)
+    art["error"] = "   "
+    result = check_regression(art, _run(0.60))
+    assert result["passed"] is False
+    assert "both_scored" in failed_checks(result)
+
+
+def test_headline_source_non_dict_artifact_returns_empty_dict():
+    assert _headline_source("not a dict") == {}
+    assert _artifact_error("not a dict") is None
 
 
 def test_regression_compares_generalization_tuned_scores():

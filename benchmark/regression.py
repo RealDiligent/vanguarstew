@@ -116,19 +116,18 @@ def _headline_source(artifact) -> dict:
 
 
 def _artifact_error(artifact) -> str | None:
-    """The first error on the artifact's evaluated partition, or ``None`` when clean."""
+    """The first error on the artifact's evaluated partition, or ``None`` when clean.
+
+    Scans the top-level ``error`` (truthy values only — falsy ``0``/``False``/``""``/``None`` are
+    not failure records) and every ``per_repo[i].error`` in the headline partition via
+    :func:`benchmark.acceptance._partition_error`. A failed ``held_out`` partition is
+    intentionally not scanned.
+    """
     artifact = _dict(artifact)
     top_err = artifact.get("error")
     if top_err:
         return top_err
-    try:
-        return _partition_error(_headline_source(artifact))
-    except Exception:
-        logger.warning(
-            "regression: _partition_error failed on evaluated partition",
-            exc_info=True,
-        )
-        return "partition error scan failed"
+    return _partition_error(_headline_source(artifact))
 
 
 def _round(value):
