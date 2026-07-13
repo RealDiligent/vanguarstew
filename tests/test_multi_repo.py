@@ -32,9 +32,9 @@ def _tiny_repo(dirpath, n=16, prefix="feat"):
     subprocess.run(["git", "init", "-q", "-b", "main", dirpath], check=True)
     subprocess.run(["git", "-C", dirpath, "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", dirpath, "config", "user.name", "t"], check=True)
-    # Git 2.43+ fsync defaults can corrupt rapid /tmp commits on CI ("invalid object").
-    subprocess.run(["git", "-C", dirpath, "config", "core.fsync", "false"], check=True)
-    subprocess.run(["git", "-C", dirpath, "config", "core.fsyncObjectFiles", "false"], check=True)
+    # Git 2.43+ batch fsync can defer loose-object writes so a later commit sees an
+    # "invalid object"; "none" (not the ignored "false") disables fsync for these repos.
+    subprocess.run(["git", "-C", dirpath, "config", "core.fsync", "none"], check=True)
     for i in range(n):
         relpath = f"{prefix}{i}.py"
         with open(os.path.join(dirpath, relpath), "w", encoding="utf-8") as f:
