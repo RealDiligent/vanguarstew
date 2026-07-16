@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -172,20 +174,141 @@ def test_cli_generalization(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["partitions"]["held_out"]["error_share"] == 0.5
 
 
-def test_cli_missing_file(tmp_path):
-    assert cli.run([str(tmp_path / "nope.json")]) == 2
+def test_cli_missing_file(tmp_path, capsys):
+    missing = tmp_path / "nope.json"
+    assert cli.run([str(missing)]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "Errno" not in err
+    assert "artifact not found" in err
+    assert str(missing) in err
 
 
-def test_cli_invalid_json(tmp_path):
+def test_cli_invalid_json(tmp_path, capsys):
     assert cli.run([_write(tmp_path, "bad.json", "{not json")]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "not valid JSON" in err
 
 
-def test_cli_non_object_artifact(tmp_path):
+def test_cli_non_object_artifact(tmp_path, capsys):
     assert cli.run([_write(tmp_path, "arr.json", "[1, 2, 3]")]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "artifact must be a JSON object" in err
 
 
-def test_cli_unreadable_path_is_handled(tmp_path):
+def test_cli_unreadable_path_is_handled(tmp_path, capsys):
+    # Directory path: IsADirectoryError (POSIX) / PermissionError (Windows).
     assert cli.run([str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "Errno" not in err
+    assert "directory" in err or "not readable" in err
+    assert str(tmp_path) in err
+
+
+def test_cli_broken_symlink_exits_two(tmp_path, capsys):
+    link = tmp_path / "broken.json"
+    link.symlink_to(tmp_path / "nonexistent.json")
+    assert cli.run([str(link)]) == 2
+    err = capsys.readouterr().err
+    assert "broken symlink" in err
+    assert "Traceback" not in err
+    assert "Errno" not in err
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permission bits are not enforced on Windows; root bypasses them too",
+)
+def test_cli_unreadable_file_reports_clean_error(tmp_path, capsys):
+    # Real chmod (no builtins.open monkeypatch): PermissionError must yield the actionable
+    # "not readable" message, never a raw errno string.
+    path = tmp_path / "artifact.json"
+    path.write_text("{}", encoding="utf-8")
+    os.chmod(path, 0)
+    try:
+        assert cli.run([str(path)]) == 2
+    finally:
+        os.chmod(path, 0o644)
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "Errno" not in err
+    assert "not readable" in err
+    assert str(path) in err
+
+
+def test_cli_oversized_int_literal_exits_two(tmp_path, capsys):
+    path = _write(tmp_path, "huge.json", '{"repos": ' + "9" * 5000 + "}")
+    assert cli.run([path]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "not valid JSON" in err
+    assert path in err
+
+
+def test_cli_symlink_to_directory_exits_two(tmp_path, capsys):
+    target = tmp_path / "dir_target"
+    target.mkdir()
+    link = tmp_path / "link-to-dir.json"
+    link.symlink_to(target)
+    assert cli.run([str(link)]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "Errno" not in err
+    assert "directory" in err or "not readable" in err
+
+
+def test_load_artifact_broken_symlink_is_handled(tmp_path, capsys):
+    link = tmp_path / "broken.json"
+    link.symlink_to(tmp_path / "nonexistent.json")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.load_artifact(str(link))
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "artifact is a broken symlink (target does not exist)" in err
+    assert str(link) in err
+
+
+def test_load_artifact_is_a_directory_error_is_handled(monkeypatch, tmp_path, capsys):
+    def _raise(*args, **kwargs):
+        raise IsADirectoryError(21, "Is a directory")
+
+    monkeypatch.setattr("builtins.open", _raise)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.load_artifact(str(tmp_path / "run.json"))
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert err == f"artifact path is a directory, not a file: {tmp_path / 'run.json'}\n"
+
+
+def test_load_artifact_permission_error_is_handled(monkeypatch, tmp_path, capsys):
+    def _raise(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("builtins.open", _raise)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.load_artifact(str(tmp_path / "run.json"))
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert err == (
+        f"artifact is not readable (check file permissions): {tmp_path / 'run.json'}\n"
+    )
+
+
+def test_load_artifact_generic_os_error_is_handled(monkeypatch, tmp_path, capsys):
+    def _raise(*args, **kwargs):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr("builtins.open", _raise)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.load_artifact(str(tmp_path / "run.json"))
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "cannot read artifact" in err
+    assert "Input/output error" in err
+    assert "Traceback" not in err
 
 
 def test_module_main_no_arg_exits_nonzero():
